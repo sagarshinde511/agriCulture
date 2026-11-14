@@ -66,6 +66,37 @@ def fetch_soil_data(limit=200):
 st.title("🌱 PestSense: Intelligent Early Pest Detection & Monitoring")
 st.markdown("**Precision Agriculture Dashboard** | *Vision-Based Pest Counting + Live MySQL Environmental Sensor Fusion*")
 
+# --- SIDEBAR: AI PARAMETERS ONLY ---
+with st.sidebar:
+    st.header("⚙️ AI Detection Parameters")
+    conf_threshold = st.slider("Confidence Threshold", min_value=0.10, max_value=0.90, value=0.25, step=0.05)
+    pest_alert_limit = st.number_input("Alert Threshold (Pest Count)", min_value=1, max_value=20, value=3)
+    use_clahe = st.checkbox("Enhance Green-on-Green Contrast (CLAHE)", value=True)
+    st.divider()
+    if st.button("🔄 Sync Latest Sensor Data", use_container_width=True):
+        st.rerun()
+
+# --- FETCH LIVE DATABASE RECORDS FOR BOTH TABS ---
+db_error = None
+env_df = pd.DataFrame()
+try:
+    env_df = fetch_soil_data(limit=250)
+except mysql.connector.Error as err:
+    db_error = str(err)
+
+# Extract latest live sensor values (fallback to None if DB empty/unreachable)
+if not env_df.empty:
+    latest_row = env_df.iloc[-1]
+    live_temp = latest_row["EnvarmentTemp"]
+    live_humi = latest_row["EnvarmentHumi"]
+    live_soil = latest_row["SoilMoisture"]
+    last_updated = latest_row["DateTime"]
+else:
+    live_temp = None
+    live_humi = None
+    live_soil = None
+    last_updated = None
+
 # --- NAVIGATION TABS ---
 tab1, tab2 = st.tabs(["🔍 Vision Pest Detection", "📊 Live Field Sensors & Environment Analysis"])
 
@@ -73,18 +104,6 @@ tab1, tab2 = st.tabs(["🔍 Vision Pest Detection", "📊 Live Field Sensors & E
 # TAB 1: VISION PEST DETECTION & COUNTING
 # ==============================================================================
 with tab1:
-    with st.sidebar:
-        st.header("⚙️ AI Detection Parameters")
-        conf_threshold = st.slider("Confidence Threshold", min_value=0.10, max_value=0.90, value=0.25, step=0.05)
-        pest_alert_limit = st.number_input("Alert Threshold (Pest Count)", min_value=1, max_value=20, value=3)
-        use_clahe = st.checkbox("Enhance Green-on-Green Contrast (CLAHE)", value=True)
-
-        st.divider()
-        st.header("🌡️ Manual Sensor Override")
-        st.caption("Used for Tab 1 fusion if live DB isn't queried")
-        temperature = st.slider("Temperature (°C)", min_value=10.0, max_value=45.0, value=28.4, step=0.1)
-        humidity = st.slider("Humidity (%)", min_value=20, max_value=100, value=72, step=1)
-
     col1, col2 = st.columns([1, 1], gap="large")
 
     with col1:
@@ -133,12 +152,37 @@ with tab1:
             detections_list = []
 
     st.divider()
-    st.subheader("3. Data Fusion, Telemetry & Alert System")
+    
+    # Header + Last Updated Timestamp from DB
+    head_col1, head_col2 = st.columns([2, 1])
+    with head_col1:
+        st.subheader("3. Data Fusion, Live Telemetry & Alert System")
+    with head_col2:
+        if last_updated is not None and pd.notna(last_updated):
+            st.info(f"🕒 **Sensor Last Updated:** `{last_updated.strftime('%Y-%m-%d %H:%M:%S')}`")
+        else:
+            st.warning("🕒 **Sensor Last Updated:** `Unavailable`")
+
+    if db_error:
+        st.error(f"Database sync warning: {db_error}")
 
     m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Detected Pest Count", f"{pest_count} Pests", delta="Action Required" if pest_count >= pest_alert_limit else "Safe", delta_color="inverse")
-    m2.metric("Temperature", f"{temperature} °C", "Optimal" if 20 <= temperature <= 32 else "Stress Risk")
-    m3.metric("Humidity", f"{humidity} %", "High Fungal/Pest Risk" if humidity > 75 else "Normal")
+    m1.metric(
+        "Detected Pest Count",
+        f"{pest_count} Pests",
+        delta="Action Required" if pest_count >= pest_alert_limit else "Safe",
+        delta_color="inverse"
+    )
+    m2.metric(
+        "Live Temperature",
+        f"{live_temp:.1f} °C" if pd.notna(live_temp) else "N/A",
+        "Optimal" if pd.notna(live_temp) and 20 <= live_temp <= 32 else ("Stress Risk" if pd.notna(live_temp) else None)
+    )
+    m3.metric(
+        "Live Humidity",
+        f"{live_humi:.1f} %" if pd.notna(live_humi) else "N/A",
+        "High Fungal/Pest Risk" if pd.notna(live_humi) and live_humi > 75 else ("Normal" if pd.notna(live_humi) else None)
+    )
 
     if pest_count >= pest_alert_limit:
         status = "CRITICAL ALERT"
@@ -150,15 +194,21 @@ with tab1:
     m4.metric("System Status", status)
 
     if image is not None:
+        temp_str = f"{live_temp:.1f}°C" if pd.notna(live_temp) else "N/A"
+        humi_str = f"{live_humi:.1f}% RH" if pd.notna(live_humi) else "N/A"
+
         if pest_count >= pest_alert_limit:
             st.error(
                 f"🚨 **ALERT TRIGGERED:** High pest density detected ({pest_count} pests found). "
-                f"Current climate ({temperature}°C, {humidity}% RH) favors rapid reproduction."
+                f"Live field climate ({temp_str}, {humi_str}) favors rapid reproduction."
             )
         elif pest_count > 0:
             st.warning(f"⚠️ **EARLY WARNING:** {pest_count} pest(s) detected on crop foliage.")
         else:
-            st.success(f"✅ **HEALTHY LEAF:** No pests detected above {int(conf_threshold*100)}% confidence.")
+            st.success(
+                f"✅ **HEALTHY LEAF:** No pests detected above {int(conf_threshold*100)}% confidence. "
+                f"Live climate: {temp_str}, {humi_str}."
+            )
 
         if detections_list:
             st.markdown("#### Detailed Pest Breakdown")
@@ -178,133 +228,125 @@ with tab2:
 
     ctrl_col1, ctrl_col2 = st.columns([1, 3])
     with ctrl_col1:
-        row_limit = st.selectbox("Records to Fetch", [50, 100, 250, 500, 1000], index=1)
+        row_limit = st.selectbox("Records to Fetch", [50, 100, 250, 500, 1000], index=2)
     with ctrl_col2:
         st.write("")
         st.write("")
-        refresh_btn = st.button("🔄 Refresh Live Database Records", type="primary")
+        if st.button("🔄 Refresh Live Database Records", type="primary"):
+            st.rerun()
 
-    try:
-        with st.spinner("Connecting to 82.180.143.66 and fetching SoilData..."):
-            env_df = fetch_soil_data(limit=row_limit)
-
-        if env_df.empty:
-            st.warning("Connected successfully, but the `SoilData` table currently has no records.")
-        else:
-            latest = env_df.iloc[-1]
-            prev = env_df.iloc[-2] if len(env_df) > 1 else latest
-
-            # Latest Readings KPI Cards
-            st.markdown(f"**Last Synced Timestamp:** `{latest['DateTime']}`")
-            k1, k2, k3 = st.columns(3)
-
-            temp_val = latest["EnvarmentTemp"]
-            humi_val = latest["EnvarmentHumi"]
-            soil_val = latest["SoilMoisture"]
-
-            k1.metric(
-                "Environment Temperature",
-                f"{temp_val:.1f} °C" if pd.notna(temp_val) else "N/A",
-                delta=f"{temp_val - prev['EnvarmentTemp']:+.1f} °C" if pd.notna(temp_val) and pd.notna(prev["EnvarmentTemp"]) else None
-            )
-            k2.metric(
-                "Environment Humidity",
-                f"{humi_val:.1f} %" if pd.notna(humi_val) else "N/A",
-                delta=f"{humi_val - prev['EnvarmentHumi']:+.1f} %" if pd.notna(humi_val) and pd.notna(prev["EnvarmentHumi"]) else None
-            )
-            k3.metric(
-                "Soil Moisture",
-                f"{soil_val:.1f} %" if pd.notna(soil_val) else "N/A",
-                delta=f"{soil_val - prev['SoilMoisture']:+.1f} %" if pd.notna(soil_val) and pd.notna(prev["SoilMoisture"]) else None
-            )
-
-            st.divider()
-
-            # --- ANALYZE ENVIRONMENT PARAMETERS OPTION ---
-            st.subheader("🧠 Analyze Environment Parameters")
-            analysis_mode = st.radio(
-                "Select Analysis View:",
-                ["Real-Time Risk & Agronomic Assessment", "Historical Trend Charts", "Statistical Summary & Raw Data"],
-                horizontal=True
-            )
-
-            if analysis_mode == "Real-Time Risk & Agronomic Assessment":
-                st.markdown("#### Automated Pest & Crop Microclimate Diagnosis")
-
-                # 1. Temperature Analysis
-                if pd.notna(temp_val):
-                    if 24 <= temp_val <= 32:
-                        st.warning(f"🌡️ **Temperature ({temp_val:.1f} °C):** Prime breeding zone for **Aphids, Whiteflies, and Armyworms** (24°C–32°C accelerates insect life cycles).")
-                    elif temp_val > 32:
-                        st.error(f"🔥 **Temperature ({temp_val:.1f} °C):** High heat stress detected. Increases **Spider Mite** outbreak risk and crop dehydration.")
-                    else:
-                        st.info(f"❄️ **Temperature ({temp_val:.1f} °C):** Cooler conditions; insect reproduction rate is naturally slowed.")
-
-                # 2. Humidity Analysis
-                if pd.notna(humi_val):
-                    if humi_val >= 75:
-                        st.error(f"💧 **Humidity ({humi_val:.1f} %):** High humidity (>75%) creates severe risk for **Whiteflies, Leaf Miners, and fungal leaf blight**.")
-                    elif 50 <= humi_val < 75:
-                        st.success(f"✅ **Humidity ({humi_val:.1f} %):** Balanced relative humidity for healthy crop transpiration.")
-                    else:
-                        st.warning(f"🏜️ **Humidity ({humi_val:.1f} %):** Low humidity (<50%) favors dry-weather pests like **Thrips and Mites**.")
-
-                # 3. Soil Moisture Analysis
-                if pd.notna(soil_val):
-                    if soil_val < 30:
-                        st.error(f"🌱 **Soil Moisture ({soil_val:.1f} %):** Soil is dry. Water-stressed plants emit stress volatiles that attract sap-sucking pests — **Irrigation Recommended**.")
-                    elif soil_val > 80:
-                        st.warning(f"🌊 **Soil Moisture ({soil_val:.1f} %):** Over-saturated soil increases root-rot and soil-borne larvae risk.")
-                    else:
-                        st.success(f"✅ **Soil Moisture ({soil_val:.1f} %):** Optimal root-zone moisture level.")
-
-                # Combined Pest Outbreak Risk Score
-                risk_score = 0
-                if pd.notna(temp_val) and 24 <= temp_val <= 33:
-                    risk_score += 40
-                if pd.notna(humi_val) and humi_val >= 70:
-                    risk_score += 40
-                if pd.notna(soil_val) and (soil_val < 30 or soil_val > 80):
-                    risk_score += 20
-
-                st.markdown("#### Overall Microclimate Pest Outbreak Risk Index")
-                st.progress(risk_score / 100)
-                st.write(f"**Calculated Environmental Risk Score:** `{risk_score} / 100` — " + (
-                    "**HIGH RISK** (Inspect leaves immediately in Tab 1)" if risk_score >= 70 else
-                    "**MODERATE RISK** (Routine monitoring advised)" if risk_score >= 40 else
-                    "**LOW RISK** (Environment unfavorable for rapid pest spread)"
-                ))
-
-            elif analysis_mode == "Historical Trend Charts":
-                c1, c2 = st.columns(2)
-                with c1:
-                    fig_temp_humi = px.line(
-                        env_df,
-                        x="DateTime",
-                        y=["EnvarmentTemp", "EnvarmentHumi"],
-                        title="Temperature (°C) & Humidity (%) Over Time",
-                        labels={"value": "Reading", "variable": "Parameter"}
-                    )
-                    st.plotly_chart(fig_temp_humi, use_container_width=True)
-
-                with c2:
-                    fig_soil = px.area(
-                        env_df,
-                        x="DateTime",
-                        y="SoilMoisture",
-                        title="Soil Moisture (%) Over Time",
-                        color_discrete_sequence=["#2e7d32"]
-                    )
-                    st.plotly_chart(fig_soil, use_container_width=True)
-
-            else:
-                st.markdown("#### Statistical Summary (Min / Avg / Max)")
-                stats_df = env_df[["SoilMoisture", "EnvarmentTemp", "EnvarmentHumi"]].describe().loc[["count", "mean", "min", "max"]].round(2)
-                st.dataframe(stats_df, use_container_width=True)
-
-                st.markdown("#### Raw Database Records (`SoilData`)")
-                st.dataframe(env_df.sort_values("DateTime", ascending=False), use_container_width=True, hide_index=True)
-
-    except mysql.connector.Error as err:
-        st.error(f"❌ **MySQL Connection Error:** {err}")
+    if db_error:
+        st.error(f"❌ **MySQL Connection Error:** {db_error}")
         st.info("Verify that your Hostinger Remote MySQL allows incoming connections from your current IP address (`%` wildcard in Remote MySQL settings).")
+    elif env_df.empty:
+        st.warning("Connected successfully, but the `SoilData` table currently has no records.")
+    else:
+        display_df = env_df.tail(row_limit).reset_index(drop=True)
+        latest = display_df.iloc[-1]
+        prev = display_df.iloc[-2] if len(display_df) > 1 else latest
+
+        st.markdown(f"**Last Synced Timestamp:** `{latest['DateTime']}`")
+        k1, k2, k3 = st.columns(3)
+
+        temp_val = latest["EnvarmentTemp"]
+        humi_val = latest["EnvarmentHumi"]
+        soil_val = latest["SoilMoisture"]
+
+        k1.metric(
+            "Environment Temperature",
+            f"{temp_val:.1f} °C" if pd.notna(temp_val) else "N/A",
+            delta=f"{temp_val - prev['EnvarmentTemp']:+.1f} °C" if pd.notna(temp_val) and pd.notna(prev["EnvarmentTemp"]) else None
+        )
+        k2.metric(
+            "Environment Humidity",
+            f"{humi_val:.1f} %" if pd.notna(humi_val) else "N/A",
+            delta=f"{humi_val - prev['EnvarmentHumi']:+.1f} %" if pd.notna(humi_val) and pd.notna(prev["EnvarmentHumi"]) else None
+        )
+        k3.metric(
+            "Soil Moisture",
+            f"{soil_val:.1f} %" if pd.notna(soil_val) else "N/A",
+            delta=f"{soil_val - prev['SoilMoisture']:+.1f} %" if pd.notna(soil_val) and pd.notna(prev["SoilMoisture"]) else None
+        )
+
+        st.divider()
+
+        # --- ANALYZE ENVIRONMENT PARAMETERS OPTION ---
+        st.subheader("🧠 Analyze Environment Parameters")
+        analysis_mode = st.radio(
+            "Select Analysis View:",
+            ["Real-Time Risk & Agronomic Assessment", "Historical Trend Charts", "Statistical Summary & Raw Data"],
+            horizontal=True
+        )
+
+        if analysis_mode == "Real-Time Risk & Agronomic Assessment":
+            st.markdown("#### Automated Pest & Crop Microclimate Diagnosis")
+
+            if pd.notna(temp_val):
+                if 24 <= temp_val <= 32:
+                    st.warning(f"🌡️ **Temperature ({temp_val:.1f} °C):** Prime breeding zone for **Aphids, Whiteflies, and Armyworms** (24°C–32°C accelerates insect life cycles).")
+                elif temp_val > 32:
+                    st.error(f"🔥 **Temperature ({temp_val:.1f} °C):** High heat stress detected. Increases **Spider Mite** outbreak risk and crop dehydration.")
+                else:
+                    st.info(f"❄️ **Temperature ({temp_val:.1f} °C):** Cooler conditions; insect reproduction rate is naturally slowed.")
+
+            if pd.notna(humi_val):
+                if humi_val >= 75:
+                    st.error(f"💧 **Humidity ({humi_val:.1f} %):** High humidity (>75%) creates severe risk for **Whiteflies, Leaf Miners, and fungal leaf blight**.")
+                elif 50 <= humi_val < 75:
+                    st.success(f"✅ **Humidity ({humi_val:.1f} %):** Balanced relative humidity for healthy crop transpiration.")
+                else:
+                    st.warning(f"🏜️ **Humidity ({humi_val:.1f} %):** Low humidity (<50%) favors dry-weather pests like **Thrips and Mites**.")
+
+            if pd.notna(soil_val):
+                if soil_val < 30:
+                    st.error(f"🌱 **Soil Moisture ({soil_val:.1f} %):** Soil is dry. Water-stressed plants emit stress volatiles that attract sap-sucking pests — **Irrigation Recommended**.")
+                elif soil_val > 80:
+                    st.warning(f"🌊 **Soil Moisture ({soil_val:.1f} %):** Over-saturated soil increases root-rot and soil-borne larvae risk.")
+                else:
+                    st.success(f"✅ **Soil Moisture ({soil_val:.1f} %):** Optimal root-zone moisture level.")
+
+            risk_score = 0
+            if pd.notna(temp_val) and 24 <= temp_val <= 33:
+                risk_score += 40
+            if pd.notna(humi_val) and humi_val >= 70:
+                risk_score += 40
+            if pd.notna(soil_val) and (soil_val < 30 or soil_val > 80):
+                risk_score += 20
+
+            st.markdown("#### Overall Microclimate Pest Outbreak Risk Index")
+            st.progress(risk_score / 100)
+            st.write(f"**Calculated Environmental Risk Score:** `{risk_score} / 100` — " + (
+                "**HIGH RISK** (Inspect leaves immediately in Tab 1)" if risk_score >= 70 else
+                "**MODERATE RISK** (Routine monitoring advised)" if risk_score >= 40 else
+                "**LOW RISK** (Environment unfavorable for rapid pest spread)"
+            ))
+
+        elif analysis_mode == "Historical Trend Charts":
+            c1, c2 = st.columns(2)
+            with c1:
+                fig_temp_humi = px.line(
+                    display_df,
+                    x="DateTime",
+                    y=["EnvarmentTemp", "EnvarmentHumi"],
+                    title="Temperature (°C) & Humidity (%) Over Time",
+                    labels={"value": "Reading", "variable": "Parameter"}
+                )
+                st.plotly_chart(fig_temp_humi, use_container_width=True)
+
+            with c2:
+                fig_soil = px.area(
+                    display_df,
+                    x="DateTime",
+                    y="SoilMoisture",
+                    title="Soil Moisture (%) Over Time",
+                    color_discrete_sequence=["#2e7d32"]
+                )
+                st.plotly_chart(fig_soil, use_container_width=True)
+
+        else:
+            st.markdown("#### Statistical Summary (Min / Avg / Max)")
+            stats_df = display_df[["SoilMoisture", "EnvarmentTemp", "EnvarmentHumi"]].describe().loc[["count", "mean", "min", "max"]].round(2)
+            st.dataframe(stats_df, use_container_width=True)
+
+            st.markdown("#### Raw Database Records (`SoilData`)")
+            st.dataframe(display_df.sort_values("DateTime", ascending=False), use_container_width=True, hide_index=True)
